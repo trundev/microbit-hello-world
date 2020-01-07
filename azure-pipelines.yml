@@ -1,0 +1,84 @@
+# Build with yotta pipeline
+# Required variables:
+#   target      -- The yotta target, like:
+#                  bbc-microbit-classic-gcc
+#   ARM_GCC_URL -- Link to download the cross-compiller, like:
+#                  https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2019q4/RC2.1/gcc-arm-none-eabi-9-2019-q4-major-x86_64-linux.tar.bz2
+#                  See:
+#                  https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads
+
+trigger:
+  batch: true
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  ARM_GCC_URL: 'https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2019q4/RC2.1/gcc-arm-none-eabi-9-2019-q4-major-x86_64-linux.tar.bz2'
+
+steps:
+- script: |
+    echo TARGET: $TARGET
+    echo ARM_GCC_URL: $ARM_GCC_URL
+    ls -la
+  displayName: 'Browse initial state'
+
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.8'
+
+- script: |
+    python --version
+    pip install --upgrade pip setuptools
+    pip install yotta
+    yotta --version
+  displayName: 'Install yotta'
+
+- script: sudo apt-get install ninja-build
+  displayName: 'Install Ninja'
+
+- script: sudo apt-get install srecord
+  displayName: 'Install srecord'
+
+- script: |
+    wget $ARM_GCC_URL -O $AGENT_TEMPDIRECTORY/gcc-arm.bz2
+    tar x -f $AGENT_TEMPDIRECTORY/gcc-arm.bz2 -C $PIPELINE_WORKSPACE
+
+    gcc_arm=$(ls -d $PIPELINE_WORKSPACE/gcc-arm-none-eabi-*)
+    echo ARM GCC in: $gcc_arm
+    export PATH=$gcc_arm/bin:$PATH
+    arm-none-eabi-gcc --version
+  displayName: 'Download ARM GCC'
+
+- script: |
+    yotta target $TARGET
+    yotta install
+    yotta list
+  displayName: 'Prepare target'
+
+- publish: '$(Build.SourcesDirectory)/yotta_modules'
+  artifact: 'yotta_modules'
+  enabled: false
+
+- script: |
+    gcc_arm=$(ls -d $PIPELINE_WORKSPACE/gcc-arm-none-eabi-*)
+    export PATH=$gcc_arm/bin:$PATH
+    yotta build
+    ls build -la
+  displayName: 'Build project'
+
+- publish: '$(Build.SourcesDirectory)/build'
+  condition: failed()
+  artifact: 'build'
+
+- task: CopyFiles@2
+  inputs:
+    sourceFolder: '$(Build.SourcesDirectory)/build/$(target)/microbit-hello-world'
+    contents: '?(*.hex|*.map)'
+    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'result'
+    publishLocation: 'Container'

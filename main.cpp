@@ -1,8 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 British Broadcasting Corporation.
-This software is provided by Lancaster University by arrangement with the BBC.
+Copyright (c) 2016 Lancaster University.
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
@@ -23,16 +22,24 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
 
+
+//
+//
+// A simple game of Space Invaders for the BBC micro:bit, using the
+// accelerometer and buttons to control the player's ship.
+//
+// As well as illustrating the use of sensors, the display and events,
+// this demonstration also provides a highly elegant example of
+// how fibers can be used to create safe and elegant programs... Note the
+// use of event handlers when the player fires, and the indepenent fibers
+// used to control the players ship, aliens, bullets and screen refresh...
+//
+//
+
 #include "MicroBit.h"
 
-#define SNAKE_EMPTY 0
-#define SNAKE_UP    1
-#define SNAKE_LEFT  2
-#define SNAKE_RIGHT 3
-#define SNAKE_DOWN  4
-
-#define SNAKE_FRAME_DELAY   350
-#define GROWTH_SPEED        3
+#define GAME_ON         0
+#define GAME_OVER       1
 
 struct Point
 {
@@ -41,151 +48,233 @@ struct Point
 };
 
 MicroBit        uBit;
-Point           head;                 // Location of the head of our snake.
-Point           tail;                 // Location of the tail of our snake.
-Point           food;                 // Location of food.
-MicroBitImage   map(5,5);  
+MicroBitImage   invaders(5,5);
+int             score;
+int             game_over;
+int             level;
+int             INVADER_SPEED = 750;
+int             PLAYER_SPEED = 150;
+int             BULLET_SPEED = 50;
+Point           player;
+Point           bullet;
 
-void place_food()
+/**
+ * Add a new row of space invaders to the game.
+ */
+int
+addRow()
 {
-    int r = uBit.random(24);
-    int x = 0; int y = 0;
-    
-    while (r > 0)
-    {
-        x = (x+1) % 5;
-        if (x == 0)
-            y = (y+1) % 5;
-            
-        if(map.getPixelValue(x,y) == SNAKE_EMPTY)
-            r--;
-    }
-    
-    food.x = x;
-    food.y = y;
+    // If we're adding a row of invaders, but we're out of space, it's game over!!
+    for (int x=0; x<5; x++)
+        if (invaders.getPixelValue(x,4))
+            return GAME_OVER;
+
+    // Otherwise, move down the invaders, and add a new role at the top.
+    invaders.shiftDown(1);
+
+    for (int x=1; x<4; x++)
+        invaders.setPixelValue(x,0,255);
+
+    return GAME_ON;
 }
 
-void snake()
-{   
-    Point newHead;              // Calculated placement of new head position based on user input.    
-    int hdirection;             // Head's direction of travel
-    int tdirection;             // Tail's direction of travel
-    int snakeLength;            // number of segments in the snake.
-    int growing;                // boolean state indicating if we've just eaten some food.
-    int score;
-    
-    // Start in the middle of the screen.
-    tail.x = tail.y = 2;    
-    head.x = head.y = 2;
-    snakeLength = 1;
-    growing = 0;
-    score = 0;
-    map.clear();
-        
-    uBit.display.image.setPixelValue(head.x, head.y, 255);
-        
-    // Add some random food.    
-    place_food();
-        
-    while (1)
-    {    
-        // Flash the food is necessary;       
-        uBit.display.image.setPixelValue(food.x, food.y, uBit.systemTime() % 1000 < 500 ? 0 : 255);
-          
-        int dx = uBit.accelerometer.getX();
-        int dy = uBit.accelerometer.getY();
-        
-        newHead.x = head.x;
-        newHead.y = head.y;
-        
-        if (abs(dx) > abs(dy))
-        {
-            if(dx < 0)
-            {
-                hdirection = SNAKE_LEFT;
-                newHead.x = newHead.x == 0 ? 4 : newHead.x-1;
-            }
-            else
-            {
-                hdirection = SNAKE_RIGHT;
-                newHead.x = newHead.x == 4 ? 0 : newHead.x+1;
-            }            
-        }
-        else    
-        {
-            if(dy < 0)
-            {
-                hdirection = SNAKE_UP;
-                newHead.y = newHead.y == 0 ? 4 : newHead.y-1;
-            }
-            else
-            {
-                hdirection = SNAKE_DOWN;
-                newHead.y = newHead.y == 4 ? 0 : newHead.y+1;
-            }
-        }           
-        
-        int status = map.getPixelValue(newHead.x, newHead.y);
-        if (status == SNAKE_UP || status == SNAKE_DOWN || status == SNAKE_LEFT || status == SNAKE_RIGHT)
-        {
-            uBit.display.scroll("GAME OVER! SCORE: ");
-            uBit.display.scroll(score);
-            
-            return;            
-        }
-                                          
-        // move the head.       
-        map.setPixelValue(head.x, head.y, hdirection);
-        uBit.display.image.setPixelValue(newHead.x, newHead.y, 255);
+/*
+ * Display Game Over and show the player's score.
+ */
+void
+gameOver()
+{
+    uBit.display.clear();
 
-        if (growing == GROWTH_SPEED)
+    uBit.display.scroll("GAME OVER! SCORE:");
+    uBit.display.scroll(score);
+}
+
+/*
+ * Calculate the speed of an invaders movement, based on the game level
+ */
+int
+invaderSpeed()
+{
+    return max(INVADER_SPEED - level*50, 50);
+}
+
+/*
+ * Determine if the are any space invaders in the given column
+ */
+bool
+invadersInColumn(int x)
+{
+    for (int y = 0; y < 5; y++)
+        if (invaders.getPixelValue(x,y))
+            return true;
+
+    return false;
+}
+
+/*
+ * Determine the number of space invaders currently on screen
+ */
+bool
+invaderCount()
+{
+    int count = 0;
+
+    for (int x=0; x<5; x++)
+        for (int y=0; y<5; y++)
+            if (invaders.getPixelValue(x,y))
+                count++;
+
+    return count;
+}
+
+/*
+ * Move space invaders on the screen.
+ */
+void
+invaderUpdate()
+{
+    bool movingRight = true;
+
+    while(!game_over)
+    {
+        // Wait for next update;    
+        uBit.sleep(invaderSpeed());
+
+        if (movingRight)
         {
-            growing = 0;
-            snakeLength++;
+            if(invadersInColumn(4))
+            {
+                movingRight = false;
+                if (addRow() == GAME_OVER)
+                {
+                    game_over = true;
+                    return;
+                }
+            }
+            else
+            {
+                invaders.shiftRight(1);
+            }
         }
         else
-        {        
-            // move the tail.
-            tdirection = map.getPixelValue(tail.x,tail.y);     
-            map.setPixelValue(tail.x, tail.y, SNAKE_EMPTY);         
-            uBit.display.image.setPixelValue(tail.x, tail.y, 0);
-    
-            // Move our record of the tail's location.        
-            if (snakeLength == 1)
+        {
+            if(invadersInColumn(0))
             {
-                tail.x = newHead.x;
-                tail.y = newHead.y;
+                movingRight = true;
+                if (addRow() == GAME_OVER)
+                {
+                    game_over = true;
+                    return;
+                }
             }
             else
             {
-                if (tdirection == SNAKE_UP)
-                    tail.y = tail.y == 0 ? 4 : tail.y-1;
-                
-                if (tdirection == SNAKE_DOWN)
-                    tail.y = tail.y == 4 ? 0 : tail.y+1;
-            
-                if (tdirection == SNAKE_LEFT)
-                    tail.x = tail.x == 0 ? 4 : tail.x-1;
-                
-                if (tdirection == SNAKE_RIGHT)
-                    tail.x = tail.x == 4 ? 0 : tail.x+1;
+                invaders.shiftLeft(1);
             }
         }
 
-        // Update our record of the head location and away we go!
-        head.x = newHead.x;
-        head.y = newHead.y;
-      
-        // if we've eaten some food, replace the food and grow ourselves!
-        if (head.x == food.x && head.y == food.y)
+        if (invaderCount() == 0)
         {
-            growing++;
-            score++;
-            place_food();
+            level++;
+            addRow();
         }
-      
-        uBit.sleep(SNAKE_FRAME_DELAY);   
-    }   
+    }
+}
+
+/* 
+ * Move the bullet up the screen
+ */
+void
+bulletUpdate()
+{
+    while (!game_over)
+    {
+        uBit.sleep(BULLET_SPEED);
+        if (bullet.y != -1)
+            bullet.y--;
+
+        if (invaders.getPixelValue(bullet.x, bullet.y) > 0)
+        {
+            score++;
+            invaders.setPixelValue(bullet.x, bullet.y, 0);
+            bullet.x = -1;
+            bullet.y = -1;
+        }
+    }
+}
+
+/*
+ * Move the player across the screen.
+ */
+void
+playerUpdate()
+{
+    while (!game_over)
+    {
+        uBit.sleep(PLAYER_SPEED);
+
+        if(uBit.accelerometer.getX() < -300 && player.x > 0)
+            player.x--;
+
+        if(uBit.accelerometer.getX() > 300 && player.x < 4)
+            player.x++;
+    }
+}
+
+/*
+ * Fire a new missile from the player
+ */
+void
+fire(MicroBitEvent)
+{
+    if (bullet.y == -1)
+    {
+        bullet.y = 4;
+        bullet.x = player.x;
+    }
+}
+
+/*
+ * A simple game of space invaders
+ */
+void 
+spaceInvaders()
+{   
+    // Reset all game state.
+    game_over = 0;
+    level = 0;
+    score = 0;
+    player.x = 2;
+    player.y = 4;
+
+    bullet.x = -1;
+    bullet.y = -1;
+
+    // Add a single row of invaders at the start.. cannon fodder!
+    invaders.clear();
+    addRow();
+
+    // Spawn independent fibers to handle the movement of each player
+    create_fiber(invaderUpdate);
+    create_fiber(bulletUpdate);
+    create_fiber(playerUpdate);
+
+    // Register event handlers for button presses (either button fires!)
+    uBit.messageBus.listen(MICROBIT_ID_BUTTON_A, MICROBIT_BUTTON_EVT_CLICK, fire);
+    uBit.messageBus.listen(MICROBIT_ID_BUTTON_B, MICROBIT_BUTTON_EVT_CLICK, fire);
+
+    // Now just keep the screen refreshed.
+    while (!game_over)
+    {    
+        uBit.sleep(10);
+        uBit.display.image.paste(invaders);
+        uBit.display.image.setPixelValue(player.x, player.y, 255);
+        uBit.display.image.setPixelValue(bullet.x, bullet.y, 255);
+    }
+
+    // Display GAME OVER and score
+    gameOver();
 }
 
 int main()
@@ -193,9 +282,10 @@ int main()
     // Initialise the micro:bit runtime.
     uBit.init();
 
-    // Insert your code here!
-    uBit.display.scroll("SNAKE v1.0");
+    // Welcome message
+    uBit.display.scroll("INVADERS!");
 
+    // Keep playing forever
     while(1)
-        snake();
+        spaceInvaders();
 }

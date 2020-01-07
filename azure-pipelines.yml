@@ -1,0 +1,131 @@
+# Build with yotta pipeline
+# Required variables:
+#   target      -- The yotta target, like:
+#                  bbc-microbit-classic-gcc
+#   ARM_GCC_URL -- Link to download the cross-compiller, like:
+#                  https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2019q4/RC2.1/gcc-arm-none-eabi-9-2019-q4-major-win32.zip.bz2
+#                  See:
+#                  https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads
+
+trigger: none
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  ARM_GCC_URL: 'https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2019q4/RC2.1/gcc-arm-none-eabi-9-2019-q4-major-win32.zip.bz2'
+  NINJA_URL: 'https://github.com/ninja-build/ninja/releases/download/v1.9.0/ninja-win.zip'
+
+steps:
+- task: PowerShell@2
+  displayName: 'Browse initial state'
+  inputs:
+    targetType: 'inline'
+    script: |
+      echo "TARGET: $env:TARGET"
+      echo "ARM_GCC_URL: $env:ARM_GCC_URL"
+      dir
+
+#
+# Yotta
+#
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.7'
+
+- task: PowerShell@2
+  displayName: 'Install yotta'
+  inputs:
+    targetType: 'inline'
+    script: |
+      python --version
+      pip install --upgrade pip setuptools
+      echo ""
+      echo "yotta 0.20.0 crash workaround: Fall-back to cryptography 2.3 and pyOpenSSL 19.0"
+      echo "The cryptography 2.3 is required by yotta 0.20, but is not supported by pyOpenSSL 19.1"
+      pip install cryptography==2.3 pyOpenSSL==19.0
+      pip install yotta
+      yotta --version
+
+#
+# Ninja
+#
+- task: PowerShell@2
+  displayName: 'Download Ninja'
+  inputs:
+    targetType: 'inline'
+    script: Invoke-WebRequest $env:NINJA_URL -o $env:Agent_TempDirectory\ninja-win.zip
+
+- task: ExtractFiles@1
+  displayName: 'Extract Ninja'
+  inputs:
+    archiveFilePatterns: '$(Agent.TempDirectory)\ninja-win.zip'
+    destinationFolder: '$(Pipeline.Workspace)\ninja'
+    cleanDestinationFolder: true
+
+- task: PowerShell@2
+  displayName: 'Check Ninja'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $env:PATH="$env:PIPELINE_WORKSPACE\ninja;$env:PATH"
+      ninja --version
+
+#
+# ARM GCC
+#
+- task: PowerShell@2
+  displayName: 'Download ARM GCC'
+  inputs:
+    targetType: 'inline'
+    script: Invoke-WebRequest $env:ARM_GCC_URL -o $env:Agent_TempDirectory\gcc-arm-none-eabi.zip
+
+- task: ExtractFiles@1
+  displayName: 'Extract ARM GCC'
+  inputs:
+    archiveFilePatterns: '$(Agent.TempDirectory)\gcc-arm-none-eabi.zip'
+    destinationFolder: '$(Pipeline.Workspace)\gcc-arm-none-eabi'
+    cleanDestinationFolder: true
+
+- task: PowerShell@2
+  displayName: 'Check ARM GCC'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $env:PATH="$env:PIPELINE_WORKSPACE\gcc-arm-none-eabi\bin;$env:PATH"
+      arm-none-eabi-gcc --version
+
+#
+# Build
+#
+- task: PowerShell@2
+  displayName: 'Prepare target'
+  inputs:
+    targetType: 'inline'
+    script: |
+      yotta target $env:TARGET
+      yotta install
+      yotta list
+
+- task: PowerShell@2
+  displayName: 'Build project'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $env:PATH="$env:PIPELINE_WORKSPACE\gcc-arm-none-eabi\bin;$env:PIPELINE_WORKSPACE\ninja;$env:PATH"
+      yotta build
+
+#
+# Publish
+#
+- task: CopyFiles@2
+  inputs:
+    sourceFolder: '$(Build.SourcesDirectory)/build/$(target)/microbit-hello-world'
+    contents: '?(*.hex|*.map)'
+    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'result'
+    publishLocation: 'Container'

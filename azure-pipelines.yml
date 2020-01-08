@@ -7,8 +7,7 @@
 #                  See:
 #                  https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads
 
-trigger:
-  batch: true
+trigger: none
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -64,7 +63,6 @@ steps:
     gcc_arm=$(ls -d $PIPELINE_WORKSPACE/gcc-arm-none-eabi-*)
     export PATH=$gcc_arm/bin:$PATH
     yotta build
-    ls build -la
   displayName: 'Build project'
 
 - publish: '$(Build.SourcesDirectory)/build'
@@ -74,7 +72,7 @@ steps:
 - task: CopyFiles@2
   inputs:
     sourceFolder: '$(Build.SourcesDirectory)/build/$(target)/microbit-hello-world'
-    contents: '?(*.hex|*.map)'
+    contents: 'microbit-hello-world*'
     TargetFolder: '$(Build.ArtifactStagingDirectory)'
 
 - task: PublishBuildArtifacts@1
